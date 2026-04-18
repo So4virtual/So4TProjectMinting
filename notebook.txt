@@ -1,0 +1,221 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.31;
+
+/*
+====================================================
+MINIMAL OWNABLE
+====================================================
+*/
+contract Ownable {
+    address public owner;
+
+    event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
+
+    constructor(address initialOwner) {
+        owner = initialOwner;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "Zero address");
+        owner = newOwner;
+        emit OwnershipTransferred(msg.sender, newOwner);
+    }
+}
+
+/*
+====================================================
+REENTRANCY GUARD
+====================================================
+*/
+contract ReentrancyGuard {
+    uint256 private constant NOT_ENTERED = 1;
+    uint256 private constant ENTERED = 2;
+
+    uint256 private status;
+
+    constructor() {
+        status = NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+        require(status != ENTERED, "ReentrancyGuard: reentrant call");
+        status = ENTERED;
+        _;
+        status = NOT_ENTERED;
+    }
+}
+
+/*
+====================================================
+MINIMAL ERC20
+====================================================
+*/
+contract SO4Token is Ownable {
+    string public name = "SO4Token";
+    string public symbol = "SO4T";
+    uint8 public decimals = 18;
+
+    uint256 public totalSupply;
+
+    mapping(address => uint256) public balanceOf;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    constructor() Ownable(msg.sender) {}
+
+    function mint(address to, uint256 amount) external onlyOwner {
+        require(to != address(0), "Zero address");
+
+        totalSupply += amount;
+        balanceOf[to] += amount;
+
+        emit Transfer(address(0), to, amount);
+    }
+}
+
+/*
+====================================================
+MINIMAL ERC721
+====================================================
+*/
+contract ProjectNFT is Ownable {
+    string public name = "Project Badge";
+    string public symbol = "PROJ";
+
+    mapping(uint256 => address) private _owners;
+
+    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+
+    constructor() Ownable(msg.sender) {}
+
+    function ownerOf(uint256 tokenId) public view returns (address) {
+        address owner_ = _owners[tokenId];
+        require(owner_ != address(0), "Nonexistent token");
+        return owner_;
+    }
+
+    function mintProject(address to, uint256 tokenId) external onlyOwner {
+        require(to != address(0), "Zero address");
+        require(_owners[tokenId] == address(0), "Already minted");
+
+        _owners[tokenId] = to;
+
+        emit Transfer(address(0), to, tokenId);
+    }
+}
+
+/*
+====================================================
+MAIN MANAGER CONTRACT
+====================================================
+*/
+contract SO4TManager is Ownable, ReentrancyGuard {
+
+    SO4Token public so4t;
+    ProjectNFT public nft;
+
+    uint256 public projectCounter;
+
+    mapping(uint256 => string) public projectURI;
+
+    event ProjectValidated(
+        uint256 indexed projectId,
+        uint256 totalMinted,
+        uint256 teamSize
+    );
+
+    event ProjectURISet(uint256 indexed projectId, string uri);
+
+    constructor() Ownable(msg.sender) {
+        // Deploy token + NFT
+        so4t = new SO4Token();
+        nft = new ProjectNFT();
+
+        // Transfer control to manager
+        so4t.transferOwnership(address(this));
+        nft.transferOwnership(address(this));
+    }
+
+    /*
+    ============================================
+    VALIDATE PROJECT
+    ============================================
+    */
+    function validateProject(
+        address[] calldata team,
+        uint256 totalAmount
+    ) external onlyOwner nonReentrant {
+
+        require(team.length > 0, "Empty team");
+        require(team.length <= 50, "Too many members");
+
+        // Prevent duplicates
+        for (uint256 i = 0; i < team.length; i++) {
+            for (uint256 j = i + 1; j < team.length; j++) {
+                require(team[i] != team[j], "Duplicate member");
+            }
+        }
+
+        // New project ID
+        projectCounter++;
+        uint256 id = projectCounter;
+
+        // Mint NFT
+        nft.mintProject(msg.sender, id);
+
+        // Calculate shares
+        uint256 share = totalAmount / team.length;
+        uint256 remainder = totalAmount % team.length;
+
+        // Distribute tokens
+        for (uint256 i = 0; i < team.length; i++) {
+            so4t.mint(team[i], share);
+        }
+
+        // Send remainder to owner
+        if (remainder > 0) {
+            so4t.mint(owner, remainder);
+        }
+
+        emit ProjectValidated(id, totalAmount, team.length);
+    }
+
+    /*
+    ============================================
+    METADATA
+    ============================================
+    */
+    function setProjectURI(uint256 projectId, string calldata uri) external onlyOwner {
+        require(projectId > 0 && projectId <= projectCounter, "Invalid ID");
+
+        projectURI[projectId] = uri;
+        emit ProjectURISet(projectId, uri);
+    }
+
+    /*
+    ============================================
+    VIEW HELPERS
+    ============================================
+    */
+    function getContracts() external view returns (address token, address nftAddress) {
+        return (address(so4t), address(nft));
+    }
+
+    function getProjectOwner(uint256 projectId) external view returns (address) {
+        return nft.ownerOf(projectId);
+    }
+
+    function calculateShare(uint256 totalAmount, uint256 teamSize)
+        external
+        pure
+        returns (uint256)
+    {
+        require(teamSize > 0, "Invalid team size");
+        return totalAmount / teamSize;
+    }
+}
